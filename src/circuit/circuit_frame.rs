@@ -51,7 +51,7 @@ impl<'a, F: PrimeField, T: Clone + Copy, W: Copy> CircuitFrame<'a, F, T, W> {
         }
     }
 
-    pub fn from_frame(frame: Frame<T, W>, store: &'a Store<F>) -> Self {
+    pub fn from_frame(frame: &Frame<T, W>, store: &'a Store<F>) -> Self {
         CircuitFrame {
             store,
             input: Some(frame.input),
@@ -82,49 +82,37 @@ impl<'a, F: PrimeField, T: Clone + Copy + Debug, W: Copy> MultiFrame<'a, F, T, W
         let n = total_frames / count + (total_frames % count != 0) as usize;
         let mut multi_frames = Vec::with_capacity(n);
 
-        let mut i = 0;
-        for _ in 0..n {
-            let mut inner_frames = Vec::with_capacity(n);
+        for chunk in frames.chunks(count) {
+            let mut inner_frames = Vec::with_capacity(count);
 
-            // This will hold the final frame and circuit_frame, in case we need to
-            // pad out the last MultiFrame.
-            let mut last = None;
-
-            // Don't index past the last frame.
-            let end = (total_frames).min(i + count);
-
-            for x in &frames[i..end] {
-                let circuit_frame = CircuitFrame::from_frame(*x, store);
-                last = Some((x, circuit_frame));
-
+            for x in chunk {
+                let circuit_frame = CircuitFrame::from_frame(x, store);
                 inner_frames.push(circuit_frame);
             }
 
+            let last_frame = chunk.last().expect("chunk must not be empty");
+            let last_circuit_frame = inner_frames
+                .last()
+                .expect("chunk must not be empty")
+                .clone();
+
             // Fill out the MultiFrame, if needed, and capture output of the final actual frame.
-            let output = if let Some((frame, circuit_frame)) = last {
-                for _ in end..i + count {
-                    inner_frames.push(circuit_frame);
-                }
-                Some(frame)
-            } else {
-                Some(&frames[end - 1])
+            for _ in chunk.len()..count {
+                inner_frames.push(last_circuit_frame.clone());
             }
-            .map(|frame| frame.output);
 
-            assert!(output.is_some());
-
-            assert!(!inner_frames.is_empty());
+            let output = last_frame.output;
+            debug_assert!(!inner_frames.is_empty());
 
             let mf = MultiFrame {
                 store,
-                input: Some(frames[i].input),
-                output,
+                input: Some(chunk[0].input),
+                output: Some(output),
                 frames: Some(inner_frames),
                 count,
             };
 
             multi_frames.push(mf);
-            i += count;
         }
 
         multi_frames
@@ -215,7 +203,6 @@ impl<F: PrimeField> CircuitFrame<'_, F, IO<F>, Witness<F>> {
 
 impl<F: PrimeField> Circuit<F> for MultiFrame<'_, F, IO<F>, Witness<F>> {
     fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
-        self.store.hydrate_scalar_cache();
         ////////////////////////////////////////////////////////////////////////////////
         // Bind public inputs.
         //

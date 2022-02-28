@@ -27,7 +27,7 @@ impl<F: PrimeField> Write<F> for IO<F> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame<T: Copy, W: Copy> {
     pub input: T,
     pub output: T,
@@ -133,16 +133,15 @@ impl<'a, 'b, F: PrimeField> FrameIt<'a, Witness<F>, F> {
     /// Like `.iter().take(n).last()`, but skips intermediary stages, to optimize
     /// for evaluation.
     fn next_n(mut self, n: usize) -> Option<(Frame<IO<F>, Witness<F>>, Frame<IO<F>, Witness<F>>)> {
-        let mut previous_frame = self.frame;
+        let mut previous_frame = self.frame.clone();
         for _ in 0..n {
             if self.frame.is_terminal() {
                 break;
             }
-            previous_frame = self.frame;
-            self.frame = self.frame.next(self.store);
+            let new_frame = self.frame.next(self.store);
+            previous_frame = std::mem::replace(&mut self.frame, new_frame);
             self.frame.log(self.store);
         }
-        dbg!(self.frame.i);
         Some((self.frame, previous_frame))
     }
 }
@@ -154,7 +153,7 @@ impl<'a, 'b, F: PrimeField> Iterator for FrameIt<'a, Witness<F>, F> {
         // skip first iteration, as one evauation happens on construction
         if self.first {
             self.first = false;
-            return Some(self.frame);
+            return Some(self.frame.clone());
         }
 
         if self.frame.is_terminal() {
@@ -163,7 +162,7 @@ impl<'a, 'b, F: PrimeField> Iterator for FrameIt<'a, Witness<F>, F> {
 
         self.frame = self.frame.next(self.store);
 
-        Some(self.frame)
+        Some(self.frame.clone())
     }
 }
 
@@ -959,14 +958,11 @@ where
             let output = ultimate_frame.output;
 
             let was_terminal = ultimate_frame.is_terminal();
+            let i = ultimate_frame.i;
             if was_terminal {
                 self.terminal_frame = Some(ultimate_frame);
             }
-            let iterations = if was_terminal {
-                ultimate_frame.i
-            } else {
-                ultimate_frame.i + 1
-            };
+            let iterations = if was_terminal { i } else { i + 1 };
             // NOTE: We compute a terminal frame but don't include it in the iteration count.
             (output.expr, output.env, iterations, output.cont)
         } else {
@@ -1003,9 +999,9 @@ where
             let _ = frames.pop();
         }
 
-        let padding_frame = frames[frames.len() - 1];
+        let padding_frame = frames[frames.len() - 1].clone();
         while needs_frame_padding(frames.len(), frames[frames.len() - 1].is_terminal()) {
-            frames.push(padding_frame);
+            frames.push(padding_frame.clone());
         }
         frames
     }

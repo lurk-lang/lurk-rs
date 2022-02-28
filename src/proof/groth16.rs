@@ -137,25 +137,21 @@ where
 
         store.hydrate_scalar_cache();
 
-        for multiframe in &multiframes {
+        let last_multiframe = multiframes.last().unwrap().clone();
+        for multiframe in multiframes.into_iter() {
             statements.push(multiframe.public_inputs());
             let proof = self
                 .generate_groth16_proof(multiframe.clone(), Some(params), &mut rng)
                 .unwrap();
 
             proofs.push(proof.clone());
-            multiframe_proofs.push((multiframe.clone(), proof));
+            multiframe_proofs.push((multiframe, proof));
         }
 
-        let last_index = multiframes_count - 1;
-
-        if proofs.len().count_ones() != 1 {
+        if proofs.len().count_ones() != 1 || proofs.len() < 2 {
             let dummy_multiframe = MultiFrame::make_dummy(
                 self.chunk_frame_count(),
-                multiframes[last_index]
-                    .frames
-                    .as_ref()
-                    .and_then(|x| x.last().copied()),
+                last_multiframe.frames.and_then(|x| x.last().copied()),
                 store,
             );
 
@@ -164,7 +160,7 @@ where
                 .unwrap();
 
             let dummy_statement = dummy_multiframe.public_inputs();
-            while proofs.len().count_ones() != 1 {
+            while proofs.len().count_ones() != 1 || proofs.len() < 2 {
                 // Pad proofs and frames to a power of 2.
                 proofs.push(dummy_proof.clone());
                 statements.push(dummy_statement.clone());
@@ -328,7 +324,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     const DEFAULT_CHECK_GROTH16: bool = false;
-    const DEFAULT_CHUNK_FRAME_COUNT: usize = 1;
+    const DEFAULT_CHUNK_FRAME_COUNT: usize = 5;
 
     fn outer_prove_aux<Fo: Fn(&'_ mut Store<Fr>) -> Ptr<Fr>>(
         source: &str,
@@ -358,6 +354,8 @@ mod tests {
                 !is_terminal || groth_prover.needs_frame_padding(count, is_terminal)
             };
             let frames = Evaluator::generate_frames(expr, e, &mut s, limit, padding_predicate);
+            s.hydrate_scalar_cache();
+
             let multi_frames = MultiFrame::from_frames(DEFAULT_CHUNK_FRAME_COUNT, &frames, &s);
 
             let cs = groth_prover.outer_synthesize(&multi_frames).unwrap();

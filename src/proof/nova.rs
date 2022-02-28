@@ -96,10 +96,10 @@ where
         limit: usize,
     ) -> Result<(Proof<Self::Grp>, RelaxedR1CSInstance<Self::Grp>), SynthesisError> {
         let frames = self.get_evaluation_frames(expr, env, store, limit);
+        store.hydrate_scalar_cache();
 
         let (shape, gens) = self.make_shape_and_gens();
 
-        store.hydrate_scalar_cache();
         self.make_proof(frames.as_slice(), &shape, &gens, store, true)
     }
 
@@ -246,7 +246,7 @@ mod tests {
 
     // FIXME: Uncommenting this causes a strange error.
     // For example, in `outer_prove_arithmetic_let()`.
-    //const DEFAULT_CHUNK_FRAME_COUNT: usize = 5;
+    // const DEFAULT_CHUNK_FRAME_COUNT: usize = 5;
     const DEFAULT_CHUNK_FRAME_COUNT: usize = 1;
 
     fn outer_prove_aux<Fo: Fn(&'_ mut Store<Fr>) -> Ptr<Fr>>(
@@ -287,6 +287,7 @@ mod tests {
         }
         if check_constraint_systems {
             let frames = nova_prover.get_evaluation_frames(expr, e, &mut s, limit);
+            s.hydrate_scalar_cache();
 
             let multiframes = MultiFrame::from_frames(nova_prover.chunk_frame_count(), &frames, &s);
             let cs = nova_prover.outer_synthesize(&multiframes).unwrap();
