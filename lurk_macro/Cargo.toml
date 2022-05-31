@@ -7,9 +7,10 @@ description = "Lurk in Rust"
 edition = "2018"
 
 [dependencies]
-blstrs = "0.4.1"
+blstrs = "0.4.2"
 ff = "0.11.0"
 gensym = "0.1.0"
+#lurk = { path = "../", package = "lurk", default-features = false }
 lurk = { path = "../", package = "lurk" }
 proc-macro2 = "1"
 proc-macro-error = "1"
@@ -18,3 +19,8 @@ syn = { version = "1", features = ["extra-traits", "full"] }
 
 [lib]
 proc-macro = true
+
+#[features]
+#default = [ "not-wasm" ]
+#not-wasm = [ "lurk/default" ]
+#wasm = [ "lurk/wasm" ]

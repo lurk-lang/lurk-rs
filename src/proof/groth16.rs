@@ -11,7 +11,6 @@ use bellperson::{
     SynthesisError,
 };
 use blstrs::{Bls12, Scalar};
-use memmap::MmapOptions;
 use once_cell::sync::Lazy;
 use pairing_lib::{Engine, MultiMillerLoop};
 use rand::{RngCore, SeedableRng};
@@ -24,44 +23,59 @@ use crate::field::LurkField;
 use crate::proof::{Provable, Prover};
 use crate::store::{Ptr, Store};
 
-use std::env;
-use std::fs::File;
-use std::io;
+#[cfg(feature = "memmap")]
+mod _memmap {
+    use super::*;
+    use memmap::MmapOptions;
+    use std::env;
+    use std::fs::File;
+    use std::io;
+
+    // If you don't have a real SnarkPack SRS symlinked, generate a fake one.
+    // Don't use this in production!
+    const FALLBACK_TO_FAKE_SRS: bool = true;
+
+    #[cfg(feature = "memmap")]
+    pub static INNER_PRODUCT_SRS: Lazy<GenericSRS<Bls12>> = Lazy::new(|| load_srs().unwrap());
+
+    fn load_srs() -> Result<GenericSRS<Bls12>, io::Error> {
+        let path = env::current_dir()?.join("params/v28-fil-inner-product-v1.srs");
+        let f = File::open(path);
+
+        match f {
+            Ok(f) => {
+                let srs_map = unsafe { MmapOptions::new().map(&f)? };
+                GenericSRS::read_mmap(&srs_map, MAX_FAKE_SRS_SIZE)
+            }
+            Err(e) => {
+                let mut rng = XorShiftRng::from_seed(DUMMY_RNG_SEED);
+
+                if FALLBACK_TO_FAKE_SRS {
+                    Ok(setup_fake_srs::<Bls12, _>(&mut rng, MAX_FAKE_SRS_SIZE))
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "memmap")]
+pub use _memmap::*;
 
 const DUMMY_RNG_SEED: [u8; 16] = [
     0x01, 0x03, 0x02, 0x04, 0x05, 0x07, 0x06, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0C, 0x0B, 0x0A,
 ];
 
-pub static INNER_PRODUCT_SRS: Lazy<GenericSRS<Bls12>> = Lazy::new(|| load_srs().unwrap());
+#[cfg(not(feature = "memmap"))]
+pub static INNER_PRODUCT_SRS: Lazy<GenericSRS<Bls12>> = Lazy::new(|| {
+    let mut rng = XorShiftRng::from_seed(DUMMY_RNG_SEED);
+    setup_fake_srs::<Bls12, _>(&mut rng, MAX_FAKE_SRS_SIZE)
+});
 
 const MAX_FAKE_SRS_SIZE: usize = (2 << 14) + 1;
 
 pub const TRANSCRIPT_INCLUDE: &[u8] = b"LURK-CIRCUIT";
-
-// If you don't have a real SnarkPack SRS symlinked, generate a fake one.
-// Don't use this in production!
-const FALLBACK_TO_FAKE_SRS: bool = true;
-
-fn load_srs() -> Result<GenericSRS<Bls12>, io::Error> {
-    let path = env::current_dir()?.join("params/v28-fil-inner-product-v1.srs");
-    let f = File::open(path);
-
-    match f {
-        Ok(f) => {
-            let srs_map = unsafe { MmapOptions::new().map(&f)? };
-            GenericSRS::read_mmap(&srs_map, MAX_FAKE_SRS_SIZE)
-        }
-        Err(e) => {
-            let mut rng = XorShiftRng::from_seed(DUMMY_RNG_SEED);
-
-            if FALLBACK_TO_FAKE_SRS {
-                Ok(setup_fake_srs::<Bls12, _>(&mut rng, MAX_FAKE_SRS_SIZE))
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Proof<E: Engine + MultiMillerLoop>

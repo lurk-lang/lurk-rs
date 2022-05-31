@@ -1,12 +1,12 @@
 use blstrs::Scalar as Fr;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ff::PrimeField;
 use lurk::{
     eval::{empty_sym_env, Evaluator},
+    field::LurkField,
     store::{Ptr, Store},
 };
 
-fn go_base<F: PrimeField>(store: &mut Store<F>, a: u64, b: u64) -> Ptr<F> {
+fn go_base<F: LurkField>(store: &mut Store<F>, a: u64, b: u64) -> Ptr<F> {
     let program = format!(
         r#"
 (let ((foo (lambda (a b)

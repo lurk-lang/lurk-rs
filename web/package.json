@@ -1,0 +1,39 @@
+{
+  "name": "lurk-rs",
+  "version": "0.1.0",
+  "description": "Lurk wasm bindings",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "create-wasm-app": ".bin/create-wasm-app.js"
+  },
+  "scripts": {
+    "build": "./webpack --config webpack.config.js",
+    "start": "./webpack serve",
+    "build:release": "./webpack  --config webpack.config.js --env=release",
+    "start:release": "./webpack serve --env=release"
+  },
+  "keywords": [
+    "webassembly",
+    "wasm",
+    "rust",
+    "webpack"
+  ],
+  "dependencies": {
+    "lurk-rs": "file:../pkg"
+  },
+  "devDependencies": {
+    "@wasm-tool/wasm-pack-plugin": "^1.6.0",
+    "@webpack-cli/serve": "^1.6.1",
+    "chokidar": "^3.5.3",
+    "copy-webpack-plugin": "^9.1.0",
+    "css-loader": "^5.2.7",
+    "file-loader": "^6.0.0",
+    "glob-parent": "^6.0.2",
+    "postcss": "^8.4.6",
+    "style-loader": "^1.2.1",
+    "webpack": "^5.69.1",
+    "webpack-cli": "^4.9.2",
+    "webpack-dev-server": "^4.7.4"
+  }
+}

@@ -7,7 +7,8 @@ description = "Turing-Complete Zero Knowledge"
 edition = "2018"
 repository = "https://github.com/lurk-lang/lurk-rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 anyhow = "1.0.45"
@@ -19,7 +20,7 @@ generic-array = "0.14.4"
 im  = "15.1.0"
 itertools = "0.9"
 log = "0.4.14"
-memmap = "0.7"
+memmap = { version = "0.7", optional = true }
 merlin = "2.0.0"
 neptune = { version = "6.1.0", default-features = false, features = ["arity2","arity4","arity8","arity16"] }
 #nova = { version = "0.4.2", package = "nova-snark"}
@@ -28,9 +29,11 @@ once_cell = "1.9.0"
 pairing_lib = { version = "0.21", package = "pairing" }
 pretty_env_logger = "0.4"
 rand = "0.8"
+getrandom = { version = "0.2.5", optional = true }
 rayon = "1.5.1"
-rustyline = "9.0.0"
+rustyline = { package = "yatima-rustyline", version = "0.1", default-features = false }
 rustyline-derive = "0.5.0"
+
 rand_xorshift = "0.3.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
@@ -43,16 +46,30 @@ dashmap = "5.0.0"
 libipld = { package = "lurk-ipld", version = "0.1.0", default-features = false, features = ["dag-cbor", "dag-json", "serde-codec"] }
 cid = { version = "0.8.4", default-features = false, features = ["alloc", "serde-codec"]}
 multihash = { version = "0.16.1", default-features = false, features = ["alloc", "blake3"] }
-
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"], optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [features]
-default = ["gpu", "bellperson/default", "nova/default"]
-
+default = [
+  "gpu",
+  "memmap",
+  "bellperson/default",
+  "nova/default",
+  "rustyline/default",
+]
 gpu = ["neptune/opencl"]
+# A wasm friendly build
+wasm = [
+  "getrandom/js",
+  "bellperson/wasm",
+  "neptune/wasm",
+  "nova/wasm",
+  "wasm-bindgen",
+  "wasm-bindgen-futures",
+]
 
 [dev-dependencies]
 criterion = "0.3.5"
-structopt = { version = "0.3", default-features = false }
 quickcheck = "1.0.3"
 quickcheck_macros = "1.0.0"
 
@@ -64,4 +81,3 @@ harness = false
 members = [
   "lurk_macro", "fcomm"
 ]
-

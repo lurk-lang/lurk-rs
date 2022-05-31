@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Lurk in WASM</title>
+  </head>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+  <style>
+    .terminal {
+      width:100%;
+      height:100%;
+      background-color:black;
+      color:#66cc00;
+      font-size:20px;
+      padding: 20px;
+    }
+    .output {
+      width: 100%;
+      min-height: 30rem;
+      font-family: "Lucida Console", Monaco, monospace;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      padding: 20px;
+    }
+  </style>
+  <body>
+
+  <div class="container">
+    <div class="form-group">
+      <h1>Lurk in WASM</h1>
+      <label for="input">Lurk Expression to Evaluate</label>
+      <textarea class="terminal" id="input" rows="15">
+(let ((foo (lambda (a b c)
+             (* (+ a b) c))))
+  (foo 1 2 3))
+      </textarea>
+    </div>
+    <noscript>This page contains webassembly and javascript content, please enable javascript in your browser.</noscript>
+    <script src="./index.js"></script>
+    <div class="form-group">
+      <button type="button" class="btn btn-primary" id="run">Run</button>&nbsp;
+      <b>Status </b>| <span id="status"> n/a </span></h3>
+
+    </div>
+    <h2>Output</h2>
+    <textarea id="output" class="output" cols="30" rows="10"></textarea>
+  </div>
+  </body>
+
+
+</html>

@@ -102,6 +102,12 @@ jobs:
       - install_gpu_deps
       - restore_rustup_cache
       - run: cargo --version
+      - run: cargo build --workspace --all-targets
+      - run: rustup target add wasm32-unknown-unknown
+      - run: sudo apt install clang
+      - run:
+          name: Wasm Build
+          command: cargo build --no-default-features --features wasm --target wasm32-unknown-unknown
       - run:
           name: Linux Tests
           command: cargo test --workspace

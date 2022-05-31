@@ -1,0 +1,4 @@
+#!/bin/sh
+#Env vars to build to wasm
+export PATH=$(npm bin):$PATH
+webpack $@
