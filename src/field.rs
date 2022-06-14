@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use multihash::Multihash;
 
+const LURK_PREFIX: u64 = 0x10de;
+
 pub trait LurkField: ff::PrimeField {
     // These constants are assumed to be based on some global table like
     // multicodec, ideally extended to include arbitrary precision codecs
     const FIELD_CODEC: u64;
     const HASH_CODEC: u64;
-    const LURK_CODEC_PREFIX: u64 = 0xc0de;
+    const LURK_CODEC_PREFIX: u64 = LURK_PREFIX;
     const NUM_BYTES: usize;
 
     fn from_bytes(bs: &[u8]) -> Option<Self> {
@@ -63,7 +65,7 @@ pub trait LurkField: ff::PrimeField {
 impl LurkField for blstrs::Scalar {
     const FIELD_CODEC: u64 = 1;
     const HASH_CODEC: u64 = 2;
-    const LURK_CODEC_PREFIX: u64 = 0xc0de;
+    const LURK_CODEC_PREFIX: u64 = LURK_PREFIX;
     const NUM_BYTES: usize = 32;
 
     fn to_tag(f: Self) -> Option<u32> {
@@ -80,7 +82,7 @@ impl LurkField for blstrs::Scalar {
 impl LurkField for pasta_curves::Fq {
     const FIELD_CODEC: u64 = 2;
     const HASH_CODEC: u64 = 3;
-    const LURK_CODEC_PREFIX: u64 = 0xc0de;
+    const LURK_CODEC_PREFIX: u64 = LURK_PREFIX;
     const NUM_BYTES: usize = 32;
 
     fn to_tag(f: Self) -> Option<u32> {
@@ -97,7 +99,7 @@ impl LurkField for pasta_curves::Fq {
 impl LurkField for pasta_curves::Fp {
     const FIELD_CODEC: u64 = 3;
     const HASH_CODEC: u64 = 3;
-    const LURK_CODEC_PREFIX: u64 = 0xc0de;
+    const LURK_CODEC_PREFIX: u64 = LURK_PREFIX;
     const NUM_BYTES: usize = 32;
 
     fn to_tag(f: Self) -> Option<u32> {

@@ -58,6 +58,8 @@ mod base64 {
     }
 }
 
+pub mod ipfs;
+
 fn bls12_proof_cache() -> FileMap<Cid, Proof<Bls12>> {
     FileMap::<Cid, Proof<Bls12>>::new("bls12_proofs").unwrap()
 }

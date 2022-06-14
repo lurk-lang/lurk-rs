@@ -13,6 +13,7 @@
       python3
       darwin.apple_sdk.framworks.OpenCL
       m4
+      ipfs
     ]
     else
     [
@@ -26,6 +27,9 @@
       python3
       ocl-icd 
       m4
+      pkg-config
+      openssl
+      ipfs
     ];
     RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
     # https://github.com/rust-lang/rust-bindgen#environment-variables

@@ -43,7 +43,6 @@ libipld = { package = "lurk-ipld", version = "0.1.0", default-features = false, 
 cid = { version = "0.8.4", default-features = false, features = ["alloc", "serde-codec"]}
 multihash = { version = "0.16.1", default-features = false, features = ["alloc", "blake3"] }
 
-
 [features]
 default = ["gpu", "bellperson/default", "nova/default"]
 
@@ -51,9 +50,9 @@ gpu = ["neptune/opencl"]
 
 [dev-dependencies]
 criterion = "0.3.5"
-structopt = { version = "0.3", default-features = false }
 quickcheck = "1.0.3"
 quickcheck_macros = "1.0.0"
+tokio = {version = "1.18", features = ["macros"] }
 
 [[bench]]
 name = "eval"

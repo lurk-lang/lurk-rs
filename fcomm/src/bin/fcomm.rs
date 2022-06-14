@@ -1,8 +1,8 @@
 use log::info;
 use std::env;
-use std::fs::read_to_string;
-use std::io;
+use std::fs::{read_to_string, File};
 use std::path::{Path, PathBuf};
+use std::{io, io::prelude::*};
 
 use blstrs::{Bls12, Scalar};
 use hex::FromHex;
@@ -10,16 +10,20 @@ use pairing_lib::{Engine, MultiMillerLoop};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use libipld::serde::{from_ipld, to_ipld};
 use lurk::eval::IO;
 use lurk::field::LurkField;
+use lurk::scalar_store::ScalarStore;
 use lurk::store::{Ptr, Store};
 
 use clap::{AppSettings, Args, Parser, Subcommand};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 
 use fcomm::{
-    self, committed_function_store, evaluate, Claim, Commitment, Error, Evaluation, Expression,
-    FileStore, Function, LurkPtr, Opening, OpeningRequest, Proof,
+    self, committed_function_store, evaluate,
+    ipfs::{dag_get, dag_put},
+    Claim, Commitment, Error, Evaluation, Expression, FileStore, Function, LurkPtr, Opening,
+    OpeningRequest, Proof,
 };
 
 /// Functional commitments
@@ -28,15 +32,15 @@ use fcomm::{
 #[clap(global_setting(AppSettings::DeriveDisplayOrder))]
 struct Cli {
     /// Evaluate inputs before passing to function (outside the proof) when opening. Otherwise inputs are unevaluated.
-    #[clap(long)]
+    #[clap(long, action)]
     eval_input: bool,
 
     /// Iteration limit
-    #[clap(short, long, default_value = "1000")]
+    #[clap(short, long, value_parser, default_value_t = 1000)]
     limit: usize,
 
     /// Exit with error on failed verification
-    #[clap(short, long)]
+    #[clap(short, long, action)]
     error: bool,
 
     /// Be verbose
@@ -63,97 +67,125 @@ enum Command {
 
     /// Verifies a proof
     Verify(Verify),
+
+    /// Stores Lurk data on IPFS
+    Put(Put),
+
+    /// Retrieves Lurk data from IPFS
+    Get(Get),
 }
 
 #[derive(Args, Debug)]
 struct Commit {
     /// Path to function
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     function: PathBuf,
 
     /// Path to functional commitment
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     commitment: Option<PathBuf>,
 
     // Function is lurk source.
-    #[clap(long)]
+    #[clap(long, action)]
     lurk: bool,
 }
 
 #[derive(Args, Debug)]
 struct Open {
     /// Path to function input
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     input: Option<PathBuf>,
 
     /// Path to proof output if prove requested
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     proof: Option<PathBuf>,
 
     /// Optional commitment value (hex string). Function will be looked-up by commitment if supplied.
-    #[clap(short, long)]
+    #[clap(short, long, value_parser)]
     commitment: Option<String>,
 
     /// Optional path to function used if commitment is not supplied.
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     function: Option<PathBuf>,
 
     /// Optional path to OpeningRequest -- which subsumes commitment, function, and input if supplied.
-    #[clap(long, parse(from_os_str))]
+    #[clap(long, value_parser)]
     request: Option<PathBuf>,
 
     // Function is lurk source.
-    #[clap(long)]
+    #[clap(long, action)]
     lurk: bool,
 
     /// Chain commitment openings. Opening includes commitment to new function along with output.
-    #[clap(long)]
+    #[clap(long, action)]
     chain: bool,
 
     /// Quote input before passing to function when opening. Otherwise input will be passed unevaluated and unquoted. --quote-input and --eval-input would cancel each other out if used in conjunction, so is probably not what is desired.
-    #[clap(long)]
+    #[clap(long, action)]
     quote_input: bool,
 }
 
 #[derive(Args, Debug)]
 struct Eval {
     /// Path to expression source
-    #[clap(short = 'x', long, parse(from_os_str))]
+    #[clap(short = 'x', long, value_parser)]
     expression: PathBuf,
 
     /// Wrap evaluation result in a claim
-    #[clap(long)]
+    #[clap(long, value_parser)]
     claim: Option<PathBuf>,
 
     // Expression is lurk source.
-    #[clap(long)]
+    #[clap(long, action)]
     lurk: bool,
 }
 
 #[derive(Args, Debug)]
 struct Prove {
     /// Path to expression source
-    #[clap(short = 'x', long, parse(from_os_str))]
+    #[clap(short = 'x', long, value_parser)]
     expression: Option<PathBuf>,
 
     /// Path to proof input
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     proof: PathBuf,
 
     /// Path to claim to prove
-    #[clap(long)]
+    #[clap(long, value_parser)]
     claim: Option<PathBuf>,
 
     // Expression is lurk source.
-    #[clap(long)]
+    #[clap(long, action)]
     lurk: bool,
 }
 
 #[derive(Args, Debug)]
 struct Verify {
     /// Path to proof input
-    #[clap(short, long, parse(from_os_str))]
+    #[clap(short, long, value_parser)]
     proof: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct Put {
+    ///Input Lurk data
+    #[clap(long, value_parser)]
+    data: PathBuf,
+
+    ///IPFS host
+    #[clap(long, default_value_t = String::from("localhost:5001"), value_parser)]
+    host: String,
+}
+
+#[derive(Args, Debug)]
+struct Get {
+    ///Input Lurk data
+    #[clap(long, value_parser)]
+    cid: String,
+
+    ///IPFS host
+    #[clap(long, default_value_t = String::from("localhost:5001"), value_parser)]
+    host: String,
 }
 
 impl Commit {
@@ -356,6 +388,35 @@ impl Verify {
     }
 }
 
+impl Put {
+    async fn put(&self) -> Result<(), Error> {
+        let store = &mut Store::<Scalar>::default();
+
+        let src = read_from_path(store, &self.data)?;
+        store.hydrate_scalar_cache();
+        let (scalar_store, _) = ScalarStore::new_with_expr(store, &src);
+        let ipld = to_ipld(scalar_store.clone()).unwrap();
+        let cid = dag_put(&self.host, ipld)
+            .await
+            .expect("Failed to store on IPFS");
+        println!("{:?}\nstored on IPFS", cid);
+        Ok(())
+    }
+}
+
+impl Get {
+    async fn get(&self) -> Result<(), Error> {
+        let ipld = dag_get(&self.host, &self.cid)
+            .await
+            .expect("Failed to retrieve from IPFS");
+        let data: ScalarStore<Scalar> = from_ipld(ipld).expect("Invalid Lurk IPLD");
+        let mut file = File::create("ipfs_output.txt")?;
+        file.write_all(format!("{:?}", data).as_bytes())?;
+        println!("Lurk data retrieved from IPFS");
+        Ok(())
+    }
+}
+
 fn read_from_path<P: AsRef<Path>, F: LurkField + Serialize>(
     store: &mut Store<F>,
     path: P,
@@ -469,7 +530,8 @@ where
     }
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
 
     pretty_env_logger::formatted_builder()
@@ -482,5 +544,7 @@ fn main() -> Result<(), Error> {
         Command::Eval(e) => e.eval(cli.limit),
         Command::Prove(p) => p.prove(cli.limit),
         Command::Verify(v) => v.verify(cli.error),
+        Command::Put(p) => p.put().await,
+        Command::Get(g) => g.get().await,
     }
 }
