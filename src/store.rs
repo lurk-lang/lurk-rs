@@ -10,7 +10,7 @@ use once_cell::sync::OnceCell;
 
 use libipld::Cid;
 
-use crate::field::LurkField;
+use crate::field::{FWrap, LurkField};
 use crate::scalar_store::ScalarContinuation;
 use crate::scalar_store::ScalarExpression;
 use crate::scalar_store::ScalarStore;
@@ -71,6 +71,7 @@ impl Default for StringSet {
 #[derive(Debug)]
 pub struct Store<F: LurkField> {
     pub(crate) cons_store: IndexSet<(Ptr<F>, Ptr<F>)>,
+    pub(crate) comm_store: IndexSet<(FWrap<F>, Ptr<F>)>,
 
     fun_store: IndexSet<(Ptr<F>, Ptr<F>, Ptr<F>)>,
 
@@ -448,6 +449,7 @@ impl<F: LurkField> Hash for RawPtr<F> {
 pub enum Expression<'a, F: LurkField> {
     Nil,
     Cons(Ptr<F>, Ptr<F>),
+    Comm(F, Ptr<F>),
     Sym(&'a str),
     /// arg, body, closed env
     Fun(Ptr<F>, Ptr<F>, Ptr<F>),
@@ -561,6 +563,11 @@ pub enum Op1 {
     Cdr,
     Atom,
     Emit,
+    Open,
+    Secret,
+    Commit,
+    Num,
+    Comm,
 }
 
 impl fmt::Display for Op1 {
@@ -570,6 +577,11 @@ impl fmt::Display for Op1 {
             Op1::Cdr => write!(f, "Cdr"),
             Op1::Atom => write!(f, "Atom"),
             Op1::Emit => write!(f, "Emit"),
+            Op1::Open => write!(f, "Open"),
+            Op1::Secret => write!(f, "Secret"),
+            Op1::Commit => write!(f, "Commit"),
+            Op1::Num => write!(f, "Num"),
+            Op1::Comm => write!(f, "Comm"),
         }
     }
 }
@@ -581,6 +593,11 @@ impl Op1 {
             x if x == Op1::Cdr as u16 => Some(Op1::Cdr),
             x if x == Op1::Atom as u16 => Some(Op1::Atom),
             x if x == Op1::Emit as u16 => Some(Op1::Emit),
+            x if x == Op1::Open as u16 => Some(Op1::Open),
+            x if x == Op1::Secret as u16 => Some(Op1::Secret),
+            x if x == Op1::Commit as u16 => Some(Op1::Commit),
+            x if x == Op1::Num as u16 => Some(Op1::Num),
+            x if x == Op1::Comm as u16 => Some(Op1::Comm),
             _ => None,
         }
     }
@@ -599,6 +616,7 @@ pub enum Op2 {
     Quotient,
     Cons,
     Begin,
+    Hide,
 }
 
 impl Op2 {
@@ -609,6 +627,8 @@ impl Op2 {
             x if x == Op2::Product as u16 => Some(Op2::Product),
             x if x == Op2::Quotient as u16 => Some(Op2::Quotient),
             x if x == Op2::Cons as u16 => Some(Op2::Cons),
+            x if x == Op2::Begin as u16 => Some(Op2::Begin),
+            x if x == Op2::Hide as u16 => Some(Op2::Hide),
             _ => None,
         }
     }
@@ -626,6 +646,7 @@ impl fmt::Display for Op2 {
             Op2::Quotient => write!(f, "Quotient"),
             Op2::Cons => write!(f, "Cons"),
             Op2::Begin => write!(f, "Begin"),
+            Op2::Hide => write!(f, "Hide"),
         }
     }
 }
@@ -670,6 +691,7 @@ pub enum Tag {
     Thunk,
     Str,
     Char,
+    Comm,
 }
 
 impl From<Tag> for u64 {
@@ -757,6 +779,7 @@ impl<F: LurkField> Default for Store<F> {
     fn default() -> Self {
         let mut store = Store {
             cons_store: Default::default(),
+            comm_store: Default::default(),
             sym_store: Default::default(),
             num_store: Default::default(),
             fun_store: Default::default(),
@@ -837,6 +860,10 @@ impl<F: LurkField> Store<F> {
         self.intern_cons(car, cdr)
     }
 
+    pub fn hide(&mut self, secret: F, payload: Ptr<F>) -> Ptr<F> {
+        self.intern_comm(secret, payload)
+    }
+
     pub fn list(&mut self, elts: &[Ptr<F>]) -> Ptr<F> {
         self.intern_list(elts)
     }
@@ -912,22 +939,52 @@ impl<F: LurkField> Store<F> {
         }
         ptr
     }
+    pub fn intern_comm(&mut self, secret: F, payload: Ptr<F>) -> Ptr<F> {
+        if payload.is_opaque() {
+            self.hash_expr(&payload);
+        }
+        let (p, inserted) = self.comm_store.insert_full((FWrap(secret), payload));
+
+        let ptr = Ptr(Tag::Comm, RawPtr::new(p));
+        if inserted {
+            self.dehydrated.push(ptr);
+        }
+        ptr
+    }
+
+    // Intern a potentially-opaque value. If the corresponding value is already known to the store,
+    // return the known value.
+    fn intern_maybe_opaque(&mut self, tag: Tag, hash: F) -> Ptr<F> {
+        self.intern_opaque_aux(tag, hash, true)
+    }
+
+    // Intern an opaque value. If the corresponding non-opaque value is already known to the store,
+    // return an opaque one anyway.
     fn intern_opaque(&mut self, tag: Tag, hash: F) -> Ptr<F> {
+        self.intern_opaque_aux(tag, hash, false)
+    }
+
+    // Intern a potentially-opaque value. If the corresponding non-opaque value is already known to the store, and
+    // `return_non_opaque_if_existing` is true, return the known value.
+    fn intern_opaque_aux(
+        &mut self,
+        tag: Tag,
+        hash: F,
+        return_non_opaque_if_existing: bool,
+    ) -> Ptr<F> {
+        self.hydrate_scalar_cache();
         let scalar_ptr = ScalarPtr::from_parts(tag.as_field(), hash);
 
         // Scope the first immutable borrow.
         {
             let ptr = self.scalar_ptr_map.get(&scalar_ptr);
-
             if let Some(p) = ptr {
-                // Only reuse existing Ptr with same hash if it is also opaque.
-                // intern_opaque will always return an opaque Ptr, never a corresponding
-                // normal Ptr. To change this behavior, remove this check.
-                if p.is_opaque() {
+                if return_non_opaque_if_existing || p.is_opaque() {
                     return *p;
                 }
             }
         }
+
         let ptr = Ptr(tag, self.new_opaque_raw_ptr());
         // Always insert. Key is unique because of newly allocated opaque raw_ptr.
         self.opaque_map.insert(ptr, scalar_ptr);
@@ -1127,7 +1184,7 @@ impl<F: LurkField> Store<F> {
             (Tag::Thunk, Some(Thunk(t))) => {
                 let value = self.intern_scalar_ptr(t.value, scalar_store)?;
                 let continuation = self.intern_scalar_cont_ptr(t.continuation, scalar_store)?;
-                Some(self.intern_thunk(super::store::Thunk {
+                Some(self.intern_thunk(crate::store::Thunk {
                     value,
                     continuation,
                 }))
@@ -1145,9 +1202,25 @@ impl<F: LurkField> Store<F> {
                 let env = self.intern_scalar_ptr(*closed_env, scalar_store)?;
                 Some(self.intern_fun(arg, body, env))
             }
-            (tag, None) => Some(self.intern_opaque(tag, ptr.1)),
+            (tag, None) => Some(self.intern_maybe_opaque(tag, ptr.1)),
             _ => None,
         }
+    }
+
+    pub fn intern_maybe_opaque_fun(&mut self, hash: F) -> Ptr<F> {
+        self.intern_maybe_opaque(Tag::Fun, hash)
+    }
+
+    pub fn intern_maybe_opaque_sym(&mut self, hash: F) -> Ptr<F> {
+        self.intern_maybe_opaque(Tag::Sym, hash)
+    }
+
+    pub fn intern_maybe_opaque_cons(&mut self, hash: F) -> Ptr<F> {
+        self.intern_maybe_opaque(Tag::Cons, hash)
+    }
+
+    pub fn intern_maybe_opaque_comm(&mut self, hash: F) -> Ptr<F> {
+        self.intern_maybe_opaque(Tag::Comm, hash)
     }
 
     pub fn intern_opaque_fun(&mut self, hash: F) -> Ptr<F> {
@@ -1160,6 +1233,10 @@ impl<F: LurkField> Store<F> {
 
     pub fn intern_opaque_cons(&mut self, hash: F) -> Ptr<F> {
         self.intern_opaque(Tag::Cons, hash)
+    }
+
+    pub fn intern_opaque_comm(&mut self, hash: F) -> Ptr<F> {
+        self.intern_opaque(Tag::Comm, hash)
     }
 
     /// Helper to allocate a list, instead of manually using `cons`.
@@ -1213,8 +1290,39 @@ impl<F: LurkField> Store<F> {
     }
 
     pub fn intern_num<T: Into<Num<F>>>(&mut self, num: T) -> Ptr<F> {
-        let (ptr, _) = self.num_store.insert_full(num.into());
+        let num = num.into();
+        let num = match num {
+            Num::Scalar(scalar) => {
+                if let Some(u64_num) = scalar.to_u64() {
+                    Num::U64(u64_num)
+                } else {
+                    num
+                }
+            }
+            Num::U64(_) => num,
+        };
+
+        let (ptr, _) = self.num_store.insert_full(num);
+
         Ptr(Tag::Num, RawPtr::new(ptr))
+    }
+
+    pub fn get_num<T: Into<Num<F>>>(&self, num: T) -> Option<Ptr<F>> {
+        let num = num.into();
+        let num = match num {
+            Num::Scalar(scalar) => {
+                if let Some(u64_num) = scalar.to_u64() {
+                    Num::U64(u64_num)
+                } else {
+                    num
+                }
+            }
+            Num::U64(_) => num,
+        };
+
+        self.num_store
+            .get_index_of::<Num<F>>(&num)
+            .map(|x| Ptr(Tag::Num, RawPtr::new(x)))
     }
 
     pub fn get_char(&self, c: char) -> Ptr<F> {
@@ -1534,6 +1642,15 @@ impl<F: LurkField> Store<F> {
         }
     }
 
+    pub(crate) fn fetch_comm(&self, ptr: &Ptr<F>) -> Option<&(FWrap<F>, Ptr<F>)> {
+        debug_assert!(matches!(ptr.0, Tag::Comm));
+        if ptr.1.is_opaque() {
+            None
+        } else {
+            self.comm_store.get_index(ptr.1.idx())
+        }
+    }
+
     pub(crate) fn fetch_num(&self, ptr: &Ptr<F>) -> Option<&Num<F>> {
         debug_assert!(matches!(ptr.0, Tag::Num));
         self.num_store.get_index(ptr.1.idx())
@@ -1551,6 +1668,7 @@ impl<F: LurkField> Store<F> {
         match ptr.0 {
             Tag::Nil => Some(Expression::Nil),
             Tag::Cons => self.fetch_cons(ptr).map(|(a, b)| Expression::Cons(*a, *b)),
+            Tag::Comm => self.fetch_comm(ptr).map(|(a, b)| Expression::Comm(a.0, *b)),
             Tag::Sym => self.fetch_sym(ptr).map(Expression::Sym),
             Tag::Num => self.fetch_num(ptr).map(|num| Expression::Num(*num)),
             Tag::Fun => self
@@ -1740,11 +1858,49 @@ impl<F: LurkField> Store<F> {
         }
     }
 
+    pub fn open(&mut self, ptr: Ptr<F>) -> Option<Ptr<F>> {
+        assert!(ptr.0 == Tag::Comm || ptr.0 == Tag::Num);
+
+        let p = match ptr.0 {
+            Tag::Comm => ptr,
+            Tag::Num => {
+                let scalar = self.fetch_num(&ptr).map(|x| x.into_scalar()).unwrap();
+
+                self.intern_maybe_opaque_comm(scalar)
+            }
+            _ => return None,
+        };
+
+        if let Some((_secret, payload)) = self.fetch_comm(&p) {
+            Some(*payload)
+        } else {
+            None
+        }
+    }
+
+    pub fn secret(&mut self, ptr: Ptr<F>) -> Option<Ptr<F>> {
+        assert_eq!(Tag::Comm, ptr.0);
+
+        let p = match ptr.0 {
+            Tag::Comm => ptr,
+            Tag::Num => {
+                let scalar = self.fetch_num(&ptr).map(|x| x.into_scalar()).unwrap();
+
+                self.intern_maybe_opaque_comm(scalar)
+            }
+            _ => return None,
+        };
+
+        self.fetch_comm(&p)
+            .and_then(|(secret, _payload)| self.get_num(Num::Scalar(secret.0)))
+    }
+
     pub fn hash_expr(&self, ptr: &Ptr<F>) -> Option<ScalarPtr<F>> {
         use Tag::*;
         match ptr.tag() {
             Nil => self.hash_nil(),
             Cons => self.hash_cons(*ptr),
+            Comm => self.hash_comm(*ptr),
             Sym => self.hash_sym(*ptr),
             Fun => self.hash_fun(*ptr),
             Num => self.hash_num(*ptr),
@@ -1763,6 +1919,7 @@ impl<F: LurkField> Store<F> {
         match ptr.tag() {
             Nil => self.get_hash_nil(),
             Cons => self.get_hash_cons(*ptr),
+            Comm => self.get_hash_comm(*ptr),
             Sym => self.get_hash_sym(*ptr),
             Fun => self.get_hash_fun(*ptr),
             Num => self.get_hash_num(*ptr),
@@ -2157,6 +2314,49 @@ impl<F: LurkField> Store<F> {
         Some(self.get_scalar_ptr(cons, self.get_hash_ptrs_2(&[*car, *cdr])?))
     }
 
+    fn hash_comm(&self, comm: Ptr<F>) -> Option<ScalarPtr<F>> {
+        if comm.is_opaque() {
+            return Some(
+                *self
+                    .opaque_map
+                    .get(&comm)
+                    .expect("ScalarPtr for opaque Comm missing"),
+            );
+        }
+
+        let (secret, payload) = self.fetch_comm(&comm)?;
+
+        let scalar_payload = self.hash_expr(payload)?;
+        let hashed = self.commitment_hash(secret.0, scalar_payload);
+        Some(self.create_scalar_ptr(comm, hashed))
+    }
+
+    pub(crate) fn commitment_hash(&self, secret_scalar: F, payload: ScalarPtr<F>) -> F {
+        let preimage = [
+            Tag::Comm.as_field::<F>(),
+            secret_scalar,
+            payload.0,
+            payload.1,
+        ];
+        self.poseidon_cache.hash4(&preimage)
+    }
+
+    fn get_hash_comm(&self, comm: Ptr<F>) -> Option<ScalarPtr<F>> {
+        if comm.is_opaque() {
+            return Some(
+                *self
+                    .opaque_map
+                    .get(&comm)
+                    .expect("ScalarPtr for opaque Comm missing"),
+            );
+        }
+
+        let (secret, payload) = self.fetch_comm(&comm)?;
+        let scalar_payload = self.get_expr_hash(payload)?;
+        let hashed = self.commitment_hash(secret.0, scalar_payload);
+        Some(self.get_scalar_ptr(comm, hashed))
+    }
+
     fn hash_thunk(&self, ptr: Ptr<F>) -> Option<ScalarPtr<F>> {
         let thunk = self.fetch_thunk(&ptr)?;
         let components = self.get_hash_components_thunk(thunk)?;
@@ -2445,6 +2645,7 @@ impl<F: LurkField> Expression<'_, F> {
 pub mod test {
     use crate::eval::{empty_sym_env, Evaluator};
     use crate::field::FWrap;
+    use crate::num;
     use crate::writer::Write;
     use blstrs::Scalar as Fr;
 
@@ -2563,6 +2764,10 @@ pub mod test {
                 (100, Box::new(|_| Op1::Cdr)),
                 (100, Box::new(|_| Op1::Atom)),
                 (100, Box::new(|_| Op1::Emit)),
+                (100, Box::new(|_| Op1::Secret)),
+                (100, Box::new(|_| Op1::Commit)),
+                (100, Box::new(|_| Op1::Num)),
+                (100, Box::new(|_| Op1::Comm)),
             ];
             frequency(g, input)
         }
@@ -2597,6 +2802,7 @@ pub mod test {
                 (100, Box::new(|_| Op2::Product)),
                 (100, Box::new(|_| Op2::Quotient)),
                 (100, Box::new(|_| Op2::Cons)),
+                (100, Box::new(|_| Op2::Hide)),
             ];
             frequency(g, input)
         }
@@ -2671,6 +2877,8 @@ pub mod test {
         assert_eq!(4, Tag::Num as u64);
         assert_eq!(5, Tag::Thunk as u64);
         assert_eq!(6, Tag::Str as u64);
+        assert_eq!(7, Tag::Char as u64);
+        assert_eq!(8, Tag::Comm as u64);
     }
 
     #[test]
@@ -2827,7 +3035,14 @@ pub mod test {
             other_sym.fmt_to_string(&other_store) != other_opaque_sym.fmt_to_string(&other_store)
         );
 
-        assert_eq!("<Opaque Sym>", other_opaque_sym.fmt_to_string(&other_store));
+        let num = num::Num::from_scalar(*sym_hash.value());
+        assert_eq!(
+            format!(
+                "<Opaque Sym {}>",
+                Expression::Num(num).fmt_to_string(&store)
+            ),
+            other_opaque_sym.fmt_to_string(&other_store)
+        );
 
         // We need to insert a few opaque syms in other_store, in order to acquire a raw_ptr that doesn't exist in
         // store. Use that to check for a malformed/missing opaque sym in store below.
@@ -2901,7 +3116,11 @@ pub mod test {
         let qcons_opaque = store.list(&[quote, opaque_cons]);
         let qcons_opaque2 = store.list(&[quote, opaque_cons2]);
 
-        assert_eq!("<Opaque Cons>", opaque_cons.fmt_to_string(&store));
+        let num = Expression::Num(num::Num::Scalar(*cons_hash.value()));
+        assert_eq!(
+            format!("<Opaque Cons {}>", num.fmt_to_string(&store)),
+            opaque_cons.fmt_to_string(&store)
+        );
 
         {
             let comparison_expr = store.list(&[eq, qcons, qcons_opaque]);
@@ -2948,14 +3167,19 @@ pub mod test {
         }
     }
 
-    fn make_opaque_cons(store: &mut Store<Fr>) -> Ptr<Fr> {
-        let num1 = store.num(123);
-        let num2 = store.num(987);
+    fn make_maybe_opaque_cons(store: &mut Store<Fr>, car: u64, cdr: u64) -> Ptr<Fr> {
+        let num1 = store.num(Num::<Fr>::from(car));
+        let num2 = store.num(Num::<Fr>::from(cdr));
         let cons = store.intern_cons(num1, num2);
         let cons_hash = store.hash_expr(&cons).unwrap();
 
-        store.intern_opaque_cons(*cons_hash.value())
+        store.intern_maybe_opaque_cons(*cons_hash.value())
     }
+
+    fn make_opaque_cons(store: &mut Store<Fr>) -> Ptr<Fr> {
+        store.intern_opaque_cons(12345.into())
+    }
+
     #[test]
     #[should_panic]
     fn opaque_cons_car() {
@@ -2972,6 +3196,22 @@ pub mod test {
         let opaque_cons = make_opaque_cons(&mut store);
         store.cdr(&opaque_cons);
     }
+
+    #[test]
+    fn maybe_opaque_cons_car() {
+        let mut store = Store::<Fr>::default();
+
+        let opaque_cons = make_maybe_opaque_cons(&mut store, 123, 987);
+        store.car(&opaque_cons);
+    }
+    #[test]
+    fn maybe_opaque_cons_cdr() {
+        let mut store = Store::<Fr>::default();
+
+        let opaque_cons = make_maybe_opaque_cons(&mut store, 123, 987);
+        store.cdr(&opaque_cons);
+    }
+
     #[test]
     fn str_and_sym_hashes() {
         let s = &mut Store::<Fr>::default();
@@ -3028,7 +3268,6 @@ pub mod test {
 
         let str2_again = s.fetch_scalar(&str2_scalar_ptr).unwrap();
 
-        dbg!(str2.fmt_to_string(&s), str2_again.fmt_to_string(&s));
         assert_eq!(str2, str2_again);
     }
 
@@ -3066,5 +3305,22 @@ pub mod test {
     #[test]
     fn empty_str_fetch_unhydrated() {
         empty_str_fetch_aux(false);
+    }
+
+    #[test]
+    fn opaque_comm_fmt() {
+        let s = &mut Store::<Fr>::default();
+
+        let scalar = Fr::from(123);
+        let opaque_comm = s.intern_opaque_comm(Fr::from(123));
+        let expr = s.fetch(&opaque_comm).unwrap();
+
+        let num = num::Num::from_scalar(scalar);
+        assert_eq!(
+            format!("<Opaque Comm {}>", Expression::Num(num).fmt_to_string(s)),
+            opaque_comm.fmt_to_string(&s),
+        );
+
+        assert_eq!(opaque_comm.fmt_to_string(&s), expr.fmt_to_string(&s));
     }
 }

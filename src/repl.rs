@@ -88,6 +88,8 @@ pub fn repl<P: AsRef<Path>>(lurk_file: Option<P>) -> Result<()> {
     loop {
         match repl.rl.readline("> ") {
             Ok(line) => {
+                repl.save_history()?;
+
                 let result = repl.state.maybe_handle_command(&mut s, &line);
 
                 match result {
@@ -139,8 +141,6 @@ pub fn repl<P: AsRef<Path>>(lurk_file: Option<P>) -> Result<()> {
             }
         }
     }
-
-    repl.save_history()?;
 
     Ok(())
 }

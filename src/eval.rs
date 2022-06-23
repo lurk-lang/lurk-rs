@@ -1,6 +1,7 @@
 use crate::field::LurkField;
 use crate::store::{
-    ContPtr, ContTag, Continuation, Expression, Op1, Op2, Pointer, Ptr, Rel2, Store, Tag, Thunk,
+    ContPtr, ContTag, Continuation, Expression, Op1, Op2, Pointer, Ptr, Rel2, ScalarPointer, Store,
+    Tag, Thunk,
 };
 use crate::writer::Write;
 use log::info;
@@ -364,7 +365,7 @@ fn reduce_with_witness<F: LurkField>(
                 _ => unreachable!(),
             },
             // Self-evaluating
-            Tag::Nil | Tag::Num | Tag::Fun | Tag::Char | Tag::Str => {
+            Tag::Nil | Tag::Num | Tag::Fun | Tag::Char | Tag::Str | Tag::Comm => {
                 Control::ApplyContinuation(expr, env, cont)
             }
             Tag::Sym => {
@@ -614,6 +615,17 @@ fn reduce_with_witness<F: LurkField>(
                             store.intern_cont_binop(Op2::Cons, env, more, cont),
                         )
                     }
+                } else if head == store.sym("hide") {
+                    let (arg1, more) = store.car_cdr(&rest);
+                    if more.is_nil() {
+                        Control::Return(arg1, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(
+                            arg1,
+                            env,
+                            store.intern_cont_binop(Op2::Hide, env, more, cont),
+                        )
+                    }
                 } else if head == store.sym("begin") {
                     let (arg1, more) = store.car_cdr(&rest);
                     if more.is_nil() {
@@ -628,7 +640,7 @@ fn reduce_with_witness<F: LurkField>(
                 } else if head == store.sym("car") {
                     let (arg1, end) = match store.car_cdr_mut(&rest) {
                         Ok((car, cdr)) => (car, cdr),
-                        Err(_) => panic!("Invalid tag"),
+                        Err(e) => panic!("{}", e),
                     };
                     if !end.is_nil() {
                         Control::Return(expr, env, store.intern_cont_error())
@@ -638,12 +650,62 @@ fn reduce_with_witness<F: LurkField>(
                 } else if head == store.sym("cdr") {
                     let (arg1, end) = match store.car_cdr_mut(&rest) {
                         Ok((car, cdr)) => (car, cdr),
-                        Err(_) => panic!("Invalid tag"),
+                        Err(e) => panic!("{}", e),
                     };
                     if !end.is_nil() {
                         Control::Return(expr, env, store.intern_cont_error())
                     } else {
                         Control::Return(arg1, env, store.intern_cont_unop(Op1::Cdr, cont))
+                    }
+                } else if head == store.sym("commit") {
+                    let (arg1, end) = match store.car_cdr_mut(&rest) {
+                        Ok((car, cdr)) => (car, cdr),
+                        Err(e) => panic!("{}", e),
+                    };
+                    if !end.is_nil() {
+                        Control::Return(expr, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(arg1, env, store.intern_cont_unop(Op1::Commit, cont))
+                    }
+                } else if head == store.sym("num") {
+                    let (arg1, end) = match store.car_cdr_mut(&rest) {
+                        Ok((car, cdr)) => (car, cdr),
+                        Err(e) => panic!("{}", e),
+                    };
+                    if !end.is_nil() {
+                        Control::Return(expr, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(arg1, env, store.intern_cont_unop(Op1::Num, cont))
+                    }
+                } else if head == store.sym("comm") {
+                    let (arg1, end) = match store.car_cdr_mut(&rest) {
+                        Ok((car, cdr)) => (car, cdr),
+                        Err(e) => panic!("{}", e),
+                    };
+                    if !end.is_nil() {
+                        Control::Return(expr, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(arg1, env, store.intern_cont_unop(Op1::Comm, cont))
+                    }
+                } else if head == store.sym("open") {
+                    let (arg1, end) = match store.car_cdr_mut(&rest) {
+                        Ok((car, cdr)) => (car, cdr),
+                        Err(e) => panic!("{}", e),
+                    };
+                    if !end.is_nil() {
+                        Control::Return(expr, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(arg1, env, store.intern_cont_unop(Op1::Open, cont))
+                    }
+                } else if head == store.sym("secret") {
+                    let (arg1, end) = match store.car_cdr_mut(&rest) {
+                        Ok((car, cdr)) => (car, cdr),
+                        Err(e) => panic!("{}", e),
+                    };
+                    if !end.is_nil() {
+                        Control::Return(expr, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(arg1, env, store.intern_cont_unop(Op1::Secret, cont))
                     }
                 } else if head == store.sym("atom") {
                     let (arg1, end) = store.car_cdr(&rest);
@@ -899,6 +961,30 @@ fn apply_continuation<F: LurkField>(
                             store.intern_cont_emit(continuation),
                         );
                     }
+                    Op1::Open => store
+                        .open(*result)
+                        .expect("hidden value could not be opened"),
+                    Op1::Secret => store
+                        .secret(*result)
+                        .expect("secret could not be extracted"),
+                    Op1::Commit => store.hide(F::zero(), *result),
+                    Op1::Num => match result.tag() {
+                        // TODO: There should be a corresponding Op1::Char for creating characters from numbers.
+                        Tag::Num | Tag::Comm | Tag::Char => {
+                            let scalar_ptr =
+                                store.get_expr_hash(result).expect("expr hash missing");
+                            store.intern_num(crate::Num::Scalar::<F>(*scalar_ptr.value()))
+                        }
+                        _ => return Control::Return(*result, *env, store.intern_cont_error()),
+                    },
+                    Op1::Comm => match result.tag() {
+                        Tag::Num | Tag::Comm => {
+                            let scalar_ptr =
+                                store.get_expr_hash(result).expect("expr hash missing");
+                            store.intern_maybe_opaque_comm(*scalar_ptr.value())
+                        }
+                        _ => return Control::Return(*result, *env, store.intern_cont_error()),
+                    },
                 };
                 Control::MakeThunk(val, *env, continuation)
             }
@@ -969,7 +1055,15 @@ fn apply_continuation<F: LurkField>(
                             store.intern_num(tmp)
                         }
                         Op2::Cons => store.cons(evaled_arg, *arg2),
+                        Op2::Hide => store.hide(a.into_scalar(), *arg2),
                         Op2::Begin => unreachable!(),
+                    },
+                    (Expression::Num(a), _) => match operator {
+                        Op2::Cons => store.cons(evaled_arg, *arg2),
+                        Op2::Hide => store.hide(a.into_scalar(), *arg2),
+                        _ => {
+                            return Control::Return(*result, *env, store.intern_cont_error());
+                        }
                     },
                     _ => match operator {
                         Op2::Cons => store.cons(evaled_arg, *arg2),
@@ -1316,6 +1410,17 @@ fn lookup<F: LurkField>(env: &Ptr<F>, var: &Ptr<F>, store: &Store<F>) -> Ptr<F> 
     }
 }
 
+// Convenience functions, mostly for use in tests.
+
+pub fn eval_to_ptr<F: LurkField>(s: &mut Store<F>, src: &str) -> Ptr<F> {
+    let expr = s.read(src).unwrap();
+    let limit = 1000000;
+    Evaluator::new(expr, empty_sym_env(s), s, limit)
+        .eval()
+        .0
+        .expr
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1331,8 +1436,29 @@ mod test {
         expected_emitted: Option<Vec<Ptr<Fr>>>,
         expected_iterations: usize,
     ) {
+        let ptr = s.read(expr).unwrap();
+
+        test_aux2(
+            s,
+            &ptr,
+            expected_result,
+            expected_env,
+            expected_cont,
+            expected_emitted,
+            expected_iterations,
+        )
+    }
+
+    fn test_aux2(
+        s: &mut Store<Fr>,
+        expr: &Ptr<Fr>,
+        expected_result: Option<Ptr<Fr>>,
+        expected_env: Option<Ptr<Fr>>,
+        expected_cont: Option<ContPtr<Fr>>,
+        expected_emitted: Option<Vec<Ptr<Fr>>>,
+        expected_iterations: usize,
+    ) {
         let limit = 100000;
-        let expr = s.read(expr).unwrap();
         let env = empty_sym_env(&s);
         let (
             IO {
@@ -1342,13 +1468,13 @@ mod test {
             },
             iterations,
             emitted,
-        ) = Evaluator::new(expr, env, s, limit).eval();
+        ) = Evaluator::new(*expr, env, s, limit).eval();
 
         if let Some(expected_result) = expected_result {
-            assert_eq!(expected_result, new_expr);
+            assert!(s.ptr_eq(&expected_result, &new_expr));
         }
         if let Some(expected_env) = expected_env {
-            assert_eq!(expected_env, new_env);
+            assert!(s.ptr_eq(&expected_env, &new_env));
         }
         if let Some(expected_cont) = expected_cont {
             assert_eq!(expected_cont, new_cont);
@@ -2386,5 +2512,71 @@ mod test {
             let expected = s.list(&[binding]);
             test_aux(s, expr, Some(expected), None, None, None, 5);
         }
+    }
+
+    #[test]
+    fn hide_open() {
+        let s = &mut Store::<Fr>::default();
+        let expr = "(open (hide 123 'x))";
+        let x = s.sym("x");
+        test_aux(s, expr, Some(x), None, None, None, 5);
+    }
+
+    #[test]
+    fn hide_opaque_open_available() {
+        use crate::store::ScalarPointer;
+        use crate::Num;
+
+        let s = &mut Store::<Fr>::default();
+        let commitment = eval_to_ptr(s, "(hide 123 'x)");
+
+        let c_scalar = s.hash_expr(&commitment).unwrap();
+        let c = c_scalar.value();
+        let comm = s.intern_maybe_opaque_comm(*c);
+
+        assert!(!comm.is_opaque());
+
+        let open = s.sym("open");
+        let x = s.sym("x");
+
+        {
+            let expr = s.list(&[open, comm]);
+            test_aux2(s, &expr, Some(x), None, None, None, 2);
+        }
+
+        {
+            let secret = s.sym("secret");
+            let expr = s.list(&[secret, comm]);
+            let sec = s.num(123);
+            test_aux2(s, &expr, Some(sec), None, None, None, 2);
+        }
+
+        {
+            // We can open a commitment identified by its corresponding `Num`.
+            let comm_num = s.num(Num::from_scalar(*c));
+            let expr2 = s.list(&[open, comm_num]);
+            test_aux2(s, &expr2, Some(x), None, None, None, 2);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn hide_opaque_open_unavailable() {
+        use crate::store::ScalarPointer;
+
+        let s = &mut Store::<Fr>::default();
+        let commitment = eval_to_ptr(s, "(hide 123 'x)");
+
+        let c_scalar = s.hash_expr(&commitment).unwrap();
+        let c = c_scalar.value();
+
+        let s2 = &mut Store::<Fr>::default();
+        let comm = s2.intern_maybe_opaque_comm(*c);
+        let open = s2.sym("open");
+        let x = s2.sym("x");
+
+        let expr = s2.list(&[open, comm]);
+
+        test_aux2(s2, &expr, Some(x), None, None, None, 2);
     }
 }

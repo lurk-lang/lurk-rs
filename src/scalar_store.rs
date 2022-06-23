@@ -79,6 +79,7 @@ impl<'a, F: LurkField> ScalarStore<F> {
         match scalar_expression {
             ScalarExpression::Nil => None,
             ScalarExpression::Cons(car, cdr) => Some([*car, *cdr].into()),
+            ScalarExpression::Comm(_, payload) => Some([*payload].into()),
             ScalarExpression::Sym(_str) => None,
             ScalarExpression::Fun {
                 arg,
@@ -160,6 +161,11 @@ impl<'a, F: LurkField> ScalarExpression<F> {
                         .map(|cdr| ScalarExpression::Cons(car, cdr))
                 })
             }),
+            Tag::Comm => store.fetch_comm(ptr).and_then(|(secret, payload)| {
+                store
+                    .get_expr_hash(payload)
+                    .map(|payload| ScalarExpression::Comm(secret.0, payload))
+            }),
             Tag::Sym => store
                 .fetch_sym(ptr)
                 .map(|str| ScalarExpression::Sym(str.into())),
@@ -194,6 +200,7 @@ impl<'a, F: LurkField> ScalarExpression<F> {
 pub enum ScalarExpression<F: LurkField> {
     Nil,
     Cons(ScalarPtr<F>, ScalarPtr<F>),
+    Comm(F, ScalarPtr<F>),
     Sym(String),
     Fun {
         arg: ScalarPtr<F>,
@@ -629,14 +636,15 @@ mod test {
         let num2 = store.num(987);
         let cons = store.intern_cons(num1, num2);
         let cons_hash = store.hash_expr(&cons).unwrap();
-        let opaque_cons = store.intern_opaque_cons(*cons_hash.value());
+        let opaque_cons = store.intern_maybe_opaque_cons(*cons_hash.value());
 
         store.hydrate_scalar_cache();
 
         let (scalar_store, _) = ScalarStore::new_with_expr(&store, &opaque_cons);
         println!("{:?}", scalar_store.scalar_map);
         println!("{:?}", scalar_store.scalar_map.len());
-        assert_eq!(1, scalar_store.scalar_map.len());
+        // If a non-opaque version has been found when interning opaque, children appear in `ScalarStore`.
+        assert_eq!(3, scalar_store.scalar_map.len());
     }
     #[test]
     fn test_scalar_store_opaque_fun() {
@@ -647,11 +655,12 @@ mod test {
         let empty_env = empty_sym_env(&store);
         let fun = store.intern_fun(arg, body, empty_env);
         let fun_hash = store.hash_expr(&fun).unwrap();
-        let opaque_fun = store.intern_opaque_fun(*fun_hash.value());
+        let opaque_fun = store.intern_maybe_opaque_fun(*fun_hash.value());
         store.hydrate_scalar_cache();
 
         let (scalar_store, _) = ScalarStore::new_with_expr(&store, &opaque_fun);
-        assert_eq!(1, scalar_store.scalar_map.len());
+        // If a non-opaque version has been found when interning opaque, children appear in `ScalarStore`.
+        assert_eq!(4, scalar_store.scalar_map.len());
     }
     #[test]
     fn test_scalar_store_opaque_sym() {
@@ -659,11 +668,12 @@ mod test {
 
         let sym = store.sym(&"sym");
         let sym_hash = store.hash_expr(&sym).unwrap();
-        let opaque_sym = store.intern_opaque_sym(*sym_hash.value());
+        let opaque_sym = store.intern_maybe_opaque_sym(*sym_hash.value());
 
         store.hydrate_scalar_cache();
 
         let (scalar_store, _) = ScalarStore::new_with_expr(&store, &opaque_sym);
+        // Only the symbol's string itself, not all of its substrings, appears in `ScalarStore`.
         assert_eq!(1, scalar_store.scalar_map.len());
     }
     #[test]
@@ -672,11 +682,29 @@ mod test {
 
         let str = store.str(&"str");
         let str_hash = store.hash_expr(&str).unwrap();
-        let opaque_str = store.intern_opaque_sym(*str_hash.value());
+        let opaque_str = store.intern_maybe_opaque_sym(*str_hash.value());
 
         store.hydrate_scalar_cache();
 
         let (scalar_store, _) = ScalarStore::new_with_expr(&store, &opaque_str);
+        // Only the string itself, not all of its substrings, appears in `ScalarStore`.
         assert_eq!(1, scalar_store.scalar_map.len());
+    }
+    #[test]
+    fn test_scalar_store_opaque_comm() {
+        let mut store = Store::<Fr>::default();
+
+        let num = store.num(987);
+        let comm = store.intern_comm(Fr::from(123), num);
+        let comm_hash = store.hash_expr(&comm).unwrap();
+        let opaque_comm = store.intern_maybe_opaque_comm(*comm_hash.value());
+
+        store.hydrate_scalar_cache();
+
+        let (scalar_store, _) = ScalarStore::new_with_expr(&store, &opaque_comm);
+        println!("{:?}", scalar_store.scalar_map);
+        println!("{:?}", scalar_store.scalar_map.len());
+        // If a non-opaque version has been found when interning opaque, children appear in `ScalarStore`.
+        assert_eq!(2, scalar_store.scalar_map.len());
     }
 }

@@ -1,6 +1,7 @@
 use ff::PrimeField;
 use libipld::cid::Cid;
 use serde::{Deserialize, Serialize};
+use std::hash::Hash;
 
 use multihash::Multihash;
 
@@ -16,6 +17,16 @@ pub trait LurkField: ff::PrimeField {
         let mut def: Self::Repr = Self::default().to_repr();
         def.as_mut().copy_from_slice(bs);
         Self::from_repr(def).into()
+    }
+    fn to_u64(&self) -> Option<u64> {
+        for x in &self.to_repr().as_ref()[8..] {
+            if *x != 0 {
+                return None;
+            }
+        }
+        let mut byte_array = [0u8; 8];
+        byte_array.copy_from_slice(&self.to_repr().as_ref()[0..8]);
+        Some(u64::from_le_bytes(byte_array))
     }
 
     // Tags have to be `u32` because we're trying to fit them into `u64`
@@ -136,6 +147,13 @@ impl<'de, F: LurkField> Deserialize<'de> for FWrap<F> {
             D::Error::custom(format!("expected field element as bytes, got {:?}", &bytes))
         })?;
         Ok(FWrap(f))
+    }
+}
+
+#[allow(clippy::derive_hash_xor_eq)]
+impl<F: LurkField> Hash for FWrap<F> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_repr().as_ref().hash(state);
     }
 }
 
