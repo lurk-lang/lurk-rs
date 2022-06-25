@@ -1,8 +1,11 @@
 #![allow(non_snake_case)]
+use log::{info, warn};
 
 use std::marker::PhantomData;
 
-use bellperson::{Circuit, ConstraintSystem, SynthesisError};
+use bellperson::{
+    util_cs::test_cs::TestConstraintSystem, Circuit, ConstraintSystem, SynthesisError,
+};
 use merlin::Transcript;
 use nova::{
     bellperson::{
@@ -25,6 +28,8 @@ use crate::eval::{Evaluator, Frame, Witness, IO};
 use crate::field::LurkField;
 use crate::proof::Prover;
 use crate::store::{Ptr, Store};
+
+use super::MultiFrameSynthesizer;
 
 type PallasPoint = pallas::Point;
 
@@ -300,9 +305,8 @@ mod tests {
             None
         };
 
-        let shape_and_gens = nova_prover.make_shape_and_gens();
-
         if check_nova {
+            let shape_and_gens = nova_prover.make_shape_and_gens();
             if let Some((proof, instance)) = proof_results {
                 proof.verify(&shape_and_gens, &instance);
             }
@@ -311,22 +315,39 @@ mod tests {
         let frames = nova_prover.get_evaluation_frames(expr, e, s, limit);
 
         let multiframes = MultiFrame::from_frames(nova_prover.chunk_frame_count(), &frames, &s);
-        let cs = nova_prover.outer_synthesize(&multiframes).unwrap();
+
+        let synthesizer =
+            MultiFrameSynthesizer::<'_, _, TestConstraintSystem<Fr>>::from_multiframes(
+                &multiframes,
+            );
+        let len = synthesizer.len();
 
         let adjusted_iterations = nova_prover.expected_total_iterations(expected_iterations);
-        let output = cs[cs.len() - 1].0.output.unwrap();
+        let mut previous_frame: Option<MultiFrame<Fr, IO<Fr>, Witness<Fr>>> = None;
 
-        dbg!(
-            multiframes.len(),
-            nova_prover.chunk_frame_count(),
-            frames.len(),
-            output.expr.fmt_to_string(&s)
-        );
+        let mut cs_blank = MetricCS::<Fr>::new();
+        let store = Store::<Fr>::default();
 
-        let constraint_systems_verified = verify_sequential_css::<Fr>(&cs).unwrap();
-        assert!(constraint_systems_verified);
+        let blank = MultiFrame::<Fr, IO<Fr>, Witness<Fr>>::blank(&store, chunk_frame_count);
+        blank
+            .synthesize(&mut cs_blank)
+            .expect("failed to synthesize blank");
 
-        check_cs_deltas(&cs, nova_prover.chunk_frame_count());
+        use crate::proof::Provable;
+        for (i, (multiframe, cs)) in synthesizer.enumerate() {
+            if let Some(prev) = previous_frame {
+                assert!(prev.precedes(&multiframe));
+            }
+            assert!(cs.is_satisfied());
+            assert!(cs.verify(&multiframe.public_inputs()));
+
+            previous_frame = Some(multiframe);
+
+            let delta = cs.delta(&cs_blank, true);
+            dbg!(&i, &delta);
+            assert!(delta == Delta::Equal);
+        }
+        let output = previous_frame.unwrap().output.unwrap();
 
         if let Some(expected_emitted) = expected_emitted {
             let emitted_vec: Vec<_> = frames
@@ -336,8 +357,6 @@ mod tests {
             assert_eq!(expected_emitted, emitted_vec);
         }
 
-        assert_eq!(expected_iterations, Frame::significant_frame_count(&frames));
-        assert_eq!(adjusted_iterations, cs.len());
         if let Some(expected_result) = expected_result {
             assert_eq!(expected_result, output.expr);
         }
@@ -349,6 +368,9 @@ mod tests {
         } else {
             assert_eq!(s.get_cont_terminal(), output.cont);
         }
+
+        assert_eq!(expected_iterations, Frame::significant_frame_count(&frames));
+        assert_eq!(adjusted_iterations, len);
     }
 
     pub fn check_cs_deltas(
@@ -368,6 +390,12 @@ mod tests {
             dbg!(i, &delta);
             assert!(delta == Delta::Equal);
         }
+    }
+
+    pub fn check_cs_delta(cs_blank: MetricCS<Fr>, cs: &TestConstraintSystem<Fr>) {
+        let delta = cs.delta(&cs_blank, true);
+        dbg!(&delta);
+        assert!(delta == Delta::Equal);
     }
 
     // IMPORTANT: Run next tests at least once. Some are ignored because they
@@ -1712,7 +1740,7 @@ mod tests {
         let s = &mut Store::<Fr>::default();
         let expected = s.num(1);
         let terminal = s.get_cont_terminal();
-        nova_test_aux(
+        nova_test_full_aux(
             s,
             "(letrec ((next (lambda (a b n target)
                      (if (eq n target)
@@ -1728,8 +1756,37 @@ mod tests {
             Some(terminal),
             None,
             89,
+            5,
+            false,
         );
     }
+
+    // #[test]
+    // #[ignore]
+    // fn outer_prove_evaluate_fibonacci_100() {
+    //     let s = &mut Store::<Fr>::default();
+    //     let expected = s.read("354224848179261915075").unwrap();
+    //     let terminal = s.get_cont_terminal();
+    //     nova_test_full_aux(
+    //         s,
+    //         "(letrec ((next (lambda (a b n target)
+    //                  (if (eq n target)
+    //                      a
+    //                      (next b
+    //                          (+ a b)
+    //                          (+ 1 n)
+    //                         target))))
+    //                 (fib (next 0 1 0)))
+    //             (fib 100))",
+    //         Some(expected),
+    //         None,
+    //         Some(terminal),
+    //         None,
+    //         4841,
+    //         5,
+    //         false,
+    //     );
+    // }
 
     #[test]
     fn outer_prove_terminal_continuation_regression() {

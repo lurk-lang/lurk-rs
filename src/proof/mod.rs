@@ -1,7 +1,11 @@
 pub mod groth16;
 pub mod nova;
 
-use bellperson::{util_cs::test_cs::TestConstraintSystem, Circuit, SynthesisError};
+use std::marker::PhantomData;
+
+use bellperson::{
+    util_cs::test_cs::TestConstraintSystem, Circuit, ConstraintSystem, SynthesisError,
+};
 
 use crate::circuit::MultiFrame;
 use crate::eval::{Witness, IO};
@@ -76,15 +80,70 @@ pub trait Prover<F: LurkField> {
         &self,
         multiframes: &'a [MultiFrame<F, IO<F>, Witness<F>>],
     ) -> Result<SequentialCS<'a, F, IO<F>, Witness<F>>, SynthesisError> {
+        println!("synthesizing {} multiframes", multiframes.len());
         let res = multiframes
             .iter()
             .enumerate()
-            .map(|(_, multiframe)| {
+            .map(|(i, multiframe)| {
                 let mut cs = TestConstraintSystem::new();
+                println!("synthesizing multiframe {}", i);
                 multiframe.clone().synthesize(&mut cs).unwrap(); // FIXME: unwrap
                 (multiframe.clone(), cs)
             })
             .collect::<Vec<_>>();
         Ok(res)
+    }
+}
+
+struct MultiFrameSynthesizer<'a, F: LurkField, CS: ConstraintSystem<F>> {
+    multiframes: &'a [MultiFrame<'a, F, IO<F>, Witness<F>>],
+    next: usize,
+    _p: PhantomData<CS>,
+}
+
+impl<'a, F: LurkField, CS: ConstraintSystem<F>> MultiFrameSynthesizer<'a, F, CS> {
+    fn from_multiframes(multiframes: &'a [MultiFrame<'a, F, IO<F>, Witness<F>>]) -> Self {
+        Self {
+            multiframes,
+            next: 0,
+            _p: Default::default(),
+        }
+    }
+}
+
+impl<
+        'a,
+        F: LurkField, //, CS: ConstraintSystem<F>
+    > Iterator for MultiFrameSynthesizer<'a, F, TestConstraintSystem<F>>
+{
+    type Item = (
+        MultiFrame<'a, F, IO<F>, Witness<F>>,
+        TestConstraintSystem<F>,
+    );
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next >= self.multiframes.len() {
+            return None;
+        } else {
+            let multiframe = &self.multiframes[self.next];
+
+            println!("CS::new();");
+            let mut cs = TestConstraintSystem::new();
+            println!("!!!");
+            multiframe.clone().synthesize(&mut cs).unwrap();
+
+            self.next += 1;
+            Some((multiframe.clone(), cs))
+        }
+    }
+}
+
+impl<
+        'a,
+        F: LurkField, //, CS: ConstraintSystem<F>
+    > ExactSizeIterator for MultiFrameSynthesizer<'a, F, TestConstraintSystem<F>>
+{
+    fn len(&self) -> usize {
+        self.multiframes.len()
     }
 }
