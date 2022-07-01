@@ -1883,19 +1883,26 @@ mod tests {
     }
 
     #[test]
-    fn outer_prove_str_cons() {
+    fn outer_prove_strcons() {
         let s = &mut Store::<Fr>::default();
         let expected_apple = s.read(r#" "apple" "#).unwrap();
         let terminal = s.get_cont_terminal();
         nova_test_aux(
             s,
-            r#"(cons #\a "pple")"#,
+            r#"(strcons #\a "pple")"#,
             Some(expected_apple),
             None,
             Some(terminal),
             None,
             3,
         );
+    }
+
+    #[test]
+    fn outer_prove_str_cons_error() {
+        let s = &mut Store::<Fr>::default();
+        let error = s.get_cont_error();
+        nova_test_aux(s, r#"(strcons #\a 123)"#, None, None, Some(error), None, 3);
     }
 
     #[test]
