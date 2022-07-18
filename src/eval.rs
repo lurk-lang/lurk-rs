@@ -615,6 +615,17 @@ fn reduce_with_witness<F: LurkField>(
                             store.intern_cont_binop(Op2::Cons, env, more, cont),
                         )
                     }
+                } else if head == store.sym("strcons") {
+                    let (arg1, more) = store.car_cdr(&rest);
+                    if more.is_nil() {
+                        Control::Return(arg1, env, store.intern_cont_error())
+                    } else {
+                        Control::Return(
+                            arg1,
+                            env,
+                            store.intern_cont_binop(Op2::StrCons, env, more, cont),
+                        )
+                    }
                 } else if head == store.sym("hide") {
                     let (arg1, more) = store.car_cdr(&rest);
                     if more.is_nil() {
@@ -1055,12 +1066,22 @@ fn apply_continuation<F: LurkField>(
                             store.intern_num(tmp)
                         }
                         Op2::Cons => store.cons(evaled_arg, *arg2),
+                        Op2::StrCons => {
+                            return Control::Return(*result, *env, store.intern_cont_error())
+                        }
                         Op2::Hide => store.hide(a.into_scalar(), *arg2),
                         Op2::Begin => unreachable!(),
                     },
                     (Expression::Num(a), _) => match operator {
                         Op2::Cons => store.cons(evaled_arg, *arg2),
                         Op2::Hide => store.hide(a.into_scalar(), *arg2),
+                        _ => {
+                            return Control::Return(*result, *env, store.intern_cont_error());
+                        }
+                    },
+                    (Expression::Char(_), Expression::Str(_)) => match operator {
+                        Op2::StrCons => store.strcons(evaled_arg, *arg2),
+                        Op2::Cons => store.cons(evaled_arg, *arg2),
                         _ => {
                             return Control::Return(*result, *env, store.intern_cont_error());
                         }
@@ -1471,6 +1492,10 @@ mod test {
         ) = Evaluator::new(*expr, env, s, limit).eval();
 
         if let Some(expected_result) = expected_result {
+            dbg!(
+                &expected_result.fmt_to_string(&s),
+                &new_expr.fmt_to_string(&s),
+            );
             assert!(s.ptr_eq(&expected_result, &new_expr));
         }
         if let Some(expected_env) = expected_env {
@@ -2332,10 +2357,12 @@ mod test {
         let s = &mut Store::<Fr>::default();
         let a = s.read(r#"#\a"#).unwrap();
         let apple = s.read(r#" "apple" "#).unwrap();
+        let a_pple = s.read(r#" (#\a . "pple") "#).unwrap();
         let pple = s.read(r#" "pple" "#).unwrap();
         let empty = s.intern_str(&"");
         let nil = s.nil();
         let terminal = s.get_cont_terminal();
+        let error = s.get_cont_error();
 
         test_aux(
             s,
@@ -2360,12 +2387,24 @@ mod test {
         test_aux(
             s,
             r#"(cons #\a "pple")"#,
+            Some(a_pple),
+            None,
+            Some(terminal),
+            None,
+            3,
+        );
+        test_aux(
+            s,
+            r#"(strcons #\a "pple")"#,
             Some(apple),
             None,
             Some(terminal),
             None,
             3,
         );
+        test_aux(s, r#"(strcons #\a #\b)"#, None, None, Some(error), None, 3);
+        test_aux(s, r#"(strcons "a" "b")"#, None, None, Some(error), None, 3);
+        test_aux(s, r#"(strcons 1 2)"#, None, None, Some(error), None, 3);
     }
 
     #[test]

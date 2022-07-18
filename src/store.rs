@@ -615,6 +615,7 @@ pub enum Op2 {
     Product,
     Quotient,
     Cons,
+    StrCons,
     Begin,
     Hide,
 }
@@ -645,6 +646,7 @@ impl fmt::Display for Op2 {
             Op2::Product => write!(f, "Product"),
             Op2::Quotient => write!(f, "Quotient"),
             Op2::Cons => write!(f, "Cons"),
+            Op2::StrCons => write!(f, "StrCons"),
             Op2::Begin => write!(f, "Begin"),
             Op2::Hide => write!(f, "Hide"),
         }
@@ -859,6 +861,9 @@ impl<F: LurkField> Store<F> {
     pub fn cons(&mut self, car: Ptr<F>, cdr: Ptr<F>) -> Ptr<F> {
         self.intern_cons(car, cdr)
     }
+    pub fn strcons(&mut self, car: Ptr<F>, cdr: Ptr<F>) -> Ptr<F> {
+        self.intern_strcons(car, cdr)
+    }
 
     pub fn hide(&mut self, secret: F, payload: Ptr<F>) -> Ptr<F> {
         self.intern_comm(secret, payload)
@@ -923,14 +928,6 @@ impl<F: LurkField> Store<F> {
             self.hash_expr(&car);
             self.hash_expr(&cdr);
         }
-        if (car.tag(), cdr.tag()) == (Tag::Char, Tag::Str) {
-            let (c, s) = (
-                self.fetch_char(&car).unwrap(),
-                self.fetch_str(&cdr).unwrap(),
-            );
-            let new_str = format!("{}{}", c, s);
-            return self.intern_str(&new_str);
-        };
 
         let (p, inserted) = self.cons_store.insert_full((car, cdr));
         let ptr = Ptr(Tag::Cons, RawPtr::new(p));
@@ -939,6 +936,22 @@ impl<F: LurkField> Store<F> {
         }
         ptr
     }
+
+    pub fn intern_strcons(&mut self, car: Ptr<F>, cdr: Ptr<F>) -> Ptr<F> {
+        if car.is_opaque() || cdr.is_opaque() {
+            self.hash_expr(&car);
+            self.hash_expr(&cdr);
+        }
+        assert_eq!((car.tag(), cdr.tag()), (Tag::Char, Tag::Str));
+        let (c, s) = (
+            self.fetch_char(&car).unwrap(),
+            self.fetch_str(&cdr).unwrap(),
+        );
+        let new_str = format!("{}{}", c, s);
+
+        self.intern_str(&new_str)
+    }
+
     pub fn intern_comm(&mut self, secret: F, payload: Ptr<F>) -> Ptr<F> {
         if payload.is_opaque() {
             self.hash_expr(&payload);
